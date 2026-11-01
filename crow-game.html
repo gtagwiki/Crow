@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Ворона и крокодилы</title>
+<style>
+  html,body{margin:0;height:100%;background:#1b2a33;overflow:hidden;touch-action:none;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  body{display:flex;align-items:center;justify-content:center}
+  canvas{display:block}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+'use strict';
+
+// ---------- constants ----------
+const W = 360;
+let H = 640, GROUND = 570;
+const GAP = 172, CROC_HALF = 36, SPACING = 215, R = 12;
+const G = 0.42, FLAP = -7.1, MAXV = 10;
+
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+// ---------- state ----------
+let state = 'ready';            // ready | play | dead
+let score = 0, best = 0, newBest = false;
+let frames = 0, groundOff = 0, shake = 0, flash = 0, deadAt = 0, landed = false;
+let crocs = [];
+const crow = { x: 92, y: 320, vy: 0, rot: 0, phase: 0, ws: 0.18 };
+const clouds = Array.from({ length: 6 }, () => ({
+  x: Math.random() * W, y: 40 + Math.random() * 220,
+  s: 0.6 + Math.random() * 0.8, v: 0.1 + Math.random() * 0.2
+}));
+try { best = +localStorage.getItem('crowBest') || 0; } catch (e) {}
+
+// ---------- sound ----------
+let ac = null;
+function tone(f1, f2, dur, type, vol) {
+  try {
+    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+    if (ac.state === 'suspended') ac.resume();
+    const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(f1, t);
+    o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t); o.stop(t + dur);
+  } catch (e) {}
+}
+
+// ---------- layout ----------
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  if (!w || !h) return;
+  const newH = Math.max(540, Math.min(820, Math.round(W * h / w)));
+  if (newH !== H) {
+    const d = newH - H;
+    H = newH; GROUND = H - 70;
+    if (state === 'ready') crow.y = H / 2;
+    else { crow.y += d; for (const c of crocs) c.gapTop += d; }
+  }
+  const s = Math.min(w / W, h / H);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  cv.style.width = (W * s) + 'px';
+  cv.style.height = (H * s) + 'px';
+  cv.width = Math.round(W * s * dpr);
+  cv.height = Math.round(H * s * dpr);
+}
+
+// ---------- game logic ----------
+function speed() { return 2.3 + Math.min(score * 0.025, 0.9); }
+
+function reset() {
+  crocs = []; score = 0; newBest = false; landed = false;
+  crow.y = H / 2; crow.vy = 0; crow.rot = 0;
+  state = 'ready';
+}
+
+function spawn() {
+  const minC = 60 + GAP / 2, maxC = GROUND - 50 - GAP / 2;
+  let c = minC + Math.random() * (maxC - minC);
+  if (crocs.length) {
+    const prev = crocs[crocs.length - 1].gapTop + GAP / 2;
+    c = Math.max(prev - 150, Math.min(prev + 150, c));
+    c = Math.max(minC, Math.min(maxC, c));
+  }
+  crocs.push({ x: W + 50, gapTop: c - GAP / 2, passed: false });
+}
+
+function hitsCroc(c) {
+  const nx = Math.max(c.x - CROC_HALF, Math.min(crow.x, c.x + CROC_HALF));
+  const dx = crow.x - nx;
+  let dy = crow.y - Math.min(crow.y, c.gapTop);
+  if (dx * dx + dy * dy < R * R) return true;
+  dy = crow.y - Math.max(crow.y, c.gapTop + GAP);
+  return dx * dx + dy * dy < R * R;
+}
+
+function die() {
+  if (state !== 'play') return;
+  state = 'dead';
+  deadAt = performance.now();
+  flash = 0.8; shake = 9;
+  if (score > best) {
+    best = score; newBest = true;
+    try { localStorage.setItem('crowBest', best); } catch (e) {}
+  }
+  tone(320, 60, 0.45, 'sawtooth', 0.1);
+}
+
+function flap() {
+  if (state === 'ready') { state = 'play'; score = 0; newBest = false; }
+  if (state === 'play') {
+    crow.vy = FLAP; crow.ws = 0.9;
+    tone(420, 640, 0.09, 'triangle', 0.09);
+  } else if (state === 'dead' && performance.now() - deadAt > 650) {
+    reset();
+  }
+}
+
+function step() {
+  frames++;
+  const sp = speed();
+  for (const c of clouds) {
+    c.x -= c.v;
+    if (c.x < -80) { c.x = W + 80; c.y = 40 + Math.random() * 220; }
+  }
+  crow.phase += crow.ws;
+  crow.ws += (0.18 - crow.ws) * 0.05;
+  if (flash > 0) flash = Math.max(0, flash - 0.06);
+  shake *= 0.85;
+
+  if (state === 'ready') {
+    groundOff += sp * 0.8;
+    crow.y = H / 2 + Math.sin(frames * 0.08) * 9;
+    crow.rot = 0;
+    return;
+  }
+
+  if (state === 'play') {
+    groundOff += sp;
+    crow.vy = Math.min(crow.vy + G, MAXV);
+    crow.y += crow.vy;
+    const target = Math.max(-0.45, Math.min(1.2, crow.vy * 0.075));
+    crow.rot += (target - crow.rot) * 0.25;
+    if (crow.y - R < 0) { crow.y = R; if (crow.vy < 0) crow.vy = 0; }
+
+    if (!crocs.length || crocs[crocs.length - 1].x < W + 50 - SPACING) spawn();
+    for (const c of crocs) {
+      c.x -= sp;
+      if (!c.passed && c.x + CROC_HALF < crow.x - R) {
+        c.passed = true; score++;
+        tone(880, 1320, 0.12, 'square', 0.05);
+      }
+      if (hitsCroc(c)) die();
+    }
+    crocs = crocs.filter(c => c.x > -80);
+    if (state === 'play' && crow.y + R >= GROUND) { crow.y = GROUND - R; die(); }
+    return;
+  }
+
+  // dead: fall to the ground
+  if (!landed) {
+    crow.vy = Math.min(crow.vy + G, MAXV);
+    crow.y += crow.vy;
+    crow.rot += (1.5 - crow.rot) * 0.15;
+    if (crow.y + R >= GROUND) { crow.y = GROUND - R; landed = true; crow.vy = 0; }
+  }
+}
+
+// ---------- drawing ----------
+function hills(base, amp, freq, color, speedK) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND);
+  for (let x = 0; x <= W; x += 10) {
+    const p = (x + groundOff * speedK) * freq;
+    ctx.lineTo(x, base - amp * (Math.sin(p) + 0.5 * Math.sin(p * 2.3)));
+  }
+  ctx.lineTo(W, GROUND);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function cloud(c) {
+  ctx.fillStyle = 'rgba(255,255,255,.85)';
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, 18 * c.s, 0, 7);
+  ctx.arc(c.x + 20 * c.s, c.y - 8 * c.s, 22 * c.s, 0, 7);
+  ctx.arc(c.x + 42 * c.s, c.y, 17 * c.s, 0, 7);
+  ctx.rect(c.x, c.y, 42 * c.s, 17 * c.s);
+  ctx.fill();
+}
+
+// Crocodile standing upright. Origin = tip of the snout, snout points up (-y),
+// body goes down to y = len. Mirrored (scale 1,-1) for the ceiling croc.
+function drawCrocUp(len) {
+  const bx = 32;
+  // body
+  let g = ctx.createLinearGradient(-bx, 0, bx, 0);
+  g.addColorStop(0, '#2f6b2a'); g.addColorStop(0.5, '#62b04a'); g.addColorStop(1, '#2f6b2a');
+  ctx.fillStyle = g;
+  ctx.fillRect(-bx, 40, bx * 2, len - 40);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(-bx, 40, bx * 2, len - 40); ctx.clip();
+  ctx.strokeStyle = 'rgba(20,60,15,.38)'; ctx.lineWidth = 2;
+  for (let y = 58, r = 0; y < len; y += 16, r++) {
+    const off = (r % 2) * 10;
+    for (let x = -bx - 12 + off; x < bx + 10; x += 20) {
+      ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI); ctx.stroke();
+    }
+  }
+  ctx.fillStyle = 'rgba(20,70,20,.55)';
+  for (let y = 64; y < len; y += 22) {
+    ctx.beginPath(); ctx.moveTo(-6, y); ctx.lineTo(0, y - 12); ctx.lineTo(6, y); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+  ctx.strokeStyle = '#1d4a1a'; ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(-bx, 40); ctx.lineTo(-bx, len);
+  ctx.moveTo(bx, 40); ctx.lineTo(bx, len);
+  ctx.stroke();
+
+  // mouth interior
+  ctx.fillStyle = '#8a1f2c';
+  ctx.beginPath();
+  ctx.moveTo(-22, 4); ctx.lineTo(22, 4); ctx.lineTo(9, 56); ctx.lineTo(-9, 56);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#d45a6a';
+  ctx.beginPath(); ctx.ellipse(0, 38, 5.5, 13, 0, 0, Math.PI * 2); ctx.fill();
+
+  // jaws (right side drawn, then mirrored for the left)
+  for (const s of [-1, 1]) {
+    ctx.save(); ctx.scale(s, 1);
+    const jg = ctx.createLinearGradient(8, 0, 38, 0);
+    jg.addColorStop(0, '#5aa843'); jg.addColorStop(1, '#2f6b2a');
+    ctx.fillStyle = jg; ctx.strokeStyle = '#1d4a1a'; ctx.lineWidth = 3; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(9, 56); ctx.lineTo(22, 4); ctx.lineTo(30, -1); ctx.lineTo(36, 6); ctx.lineTo(36, 56);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // teeth
+    ctx.fillStyle = '#fffbe8'; ctx.strokeStyle = '#b9b088'; ctx.lineWidth = 1;
+    for (let i = 0; i < 5; i++) {
+      const t0 = (i + 0.2) / 5, t1 = (i + 0.8) / 5;
+      const ax = 22 - 13 * t0, ay = 4 + 52 * t0, cx = 22 - 13 * t1, cy = 4 + 52 * t1;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay); ctx.lineTo(cx, cy); ctx.lineTo((ax + cx) / 2 - 7, (ay + cy) / 2 - 1);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    // nostril
+    ctx.fillStyle = '#173d14';
+    ctx.beginPath(); ctx.ellipse(29, 10, 2.5, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+    // eye
+    ctx.fillStyle = '#5aa843'; ctx.strokeStyle = '#1d4a1a'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(27, 52, 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#f4d03f';
+    ctx.beginPath(); ctx.arc(27, 52, 5.6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.ellipse(27, 52, 1.6, 4.6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawCrow() {
+  ctx.save();
+  ctx.translate(crow.x, crow.y);
+  ctx.rotate(crow.rot);
+  const dead = state === 'dead';
+  // tail
+  ctx.fillStyle = '#101016';
+  ctx.beginPath();
+  ctx.moveTo(-12, -3); ctx.lineTo(-31, -9); ctx.lineTo(-28, -1); ctx.lineTo(-32, 5); ctx.lineTo(-12, 5);
+  ctx.closePath(); ctx.fill();
+  // legs
+  ctx.strokeStyle = '#3a3a44'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-2, 11); ctx.lineTo(-4, 18); ctx.moveTo(4, 11); ctx.lineTo(3, 18);
+  ctx.stroke();
+  // body
+  const bg = ctx.createLinearGradient(0, -14, 0, 14);
+  bg.addColorStop(0, '#3d3d4e'); bg.addColorStop(0.5, '#1c1c26'); bg.addColorStop(1, '#101016');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.ellipse(0, 0, 18, 13, 0, 0, Math.PI * 2); ctx.fill();
+  // head
+  ctx.fillStyle = '#1c1c26';
+  ctx.beginPath(); ctx.arc(12, -7, 9.5, 0, Math.PI * 2); ctx.fill();
+  // beak
+  ctx.fillStyle = '#50505c';
+  ctx.beginPath(); ctx.moveTo(19, -12); ctx.lineTo(33, -5); ctx.lineTo(19, -2); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#2a2a32'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(20, -6.5); ctx.lineTo(31, -5.2); ctx.stroke();
+  // eye
+  if (dead) {
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(11.5, -12.5); ctx.lineTo(17.5, -6.5); ctx.moveTo(17.5, -12.5); ctx.lineTo(11.5, -6.5);
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(14.5, -9.5, 3.4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(15.5, -9.3, 1.7, 0, Math.PI * 2); ctx.fill();
+  }
+  // wing
+  ctx.save();
+  ctx.translate(-2, -1);
+  ctx.rotate(dead ? 0.6 : Math.sin(crow.phase) * 0.9 - 0.2);
+  ctx.fillStyle = '#2d2d3b';
+  ctx.beginPath(); ctx.ellipse(-9, 2, 14, 6.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#1a1a24';
+  ctx.beginPath(); ctx.ellipse(-17, 3, 8, 4, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  ctx.restore();
+}
+
+function txt(s, x, y, size, fill, stroke, lw) {
+  ctx.font = '900 ' + size + 'px system-ui,"Segoe UI",Roboto,Arial,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round'; ctx.lineWidth = lw || 6;
+  ctx.strokeStyle = stroke || '#1b1b1b';
+  ctx.strokeText(s, x, y);
+  ctx.fillStyle = fill || '#fff';
+  ctx.fillText(s, x, y);
+}
+
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function render() {
+  ctx.setTransform(cv.width / W, 0, 0, cv.height / H, 0, 0);
+  ctx.save();
+  if (shake > 0.3) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+
+  // sky
+  const sg = ctx.createLinearGradient(0, 0, 0, GROUND);
+  sg.addColorStop(0, '#6ec3e8'); sg.addColorStop(1, '#d6f0f7');
+  ctx.fillStyle = sg;
+  ctx.fillRect(-12, -12, W + 24, H + 24);
+  ctx.fillStyle = 'rgba(255,244,180,.9)';
+  ctx.beginPath(); ctx.arc(290, 90, 30, 0, 7); ctx.fill();
+  for (const c of clouds) cloud(c);
+  hills(GROUND - 70, 22, 0.012, '#9ccf92', 0.15);
+  hills(GROUND - 34, 16, 0.02, '#74b46c', 0.35);
+
+  // crocodiles
+  for (const c of crocs) {
+    const bottomTip = c.gapTop + GAP;
+    ctx.save(); ctx.translate(c.x, bottomTip);
+    drawCrocUp(GROUND - bottomTip + 30);
+    ctx.restore();
+    ctx.save(); ctx.translate(c.x, c.gapTop); ctx.scale(1, -1);
+    drawCrocUp(c.gapTop + 30);
+    ctx.restore();
+  }
+
+  // ground
+  ctx.fillStyle = '#d9b26f'; ctx.fillRect(-12, GROUND, W + 24, H - GROUND + 12);
+  ctx.fillStyle = '#5aa83f'; ctx.fillRect(-12, GROUND, W + 24, 16);
+  ctx.fillStyle = '#4a9333';
+  const o = groundOff % 24;
+  for (let x = -24 - o; x < W + 24; x += 24) {
+    ctx.beginPath();
+    ctx.moveTo(x, GROUND); ctx.lineTo(x + 12, GROUND); ctx.lineTo(x + 4, GROUND + 16); ctx.lineTo(x - 8, GROUND + 16);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = '#3d7a29'; ctx.fillRect(-12, GROUND + 16, W + 24, 3);
+  ctx.fillStyle = '#c29a58';
+  const o2 = groundOff % 40;
+  for (let x = -40 - o2; x < W + 40; x += 40) {
+    ctx.fillRect(x + 10, GROUND + 34, 10, 4);
+    ctx.fillRect(x + 28, GROUND + 50, 8, 4);
+  }
+
+  drawCrow();
+  ctx.restore();
+
+  // ---- UI ----
+  if (state === 'play') {
+    txt(String(score), W / 2, 80, 58, '#fff', '#1b1b1b', 8);
+  } else if (state === 'ready') {
+    txt('ВОРОНА', W / 2, 140, 52, '#fff', '#1b1b1b', 9);
+    txt('и крокодилы', W / 2, 192, 30, '#ffe27a', '#1b1b1b', 7);
+    if (Math.floor(frames / 30) % 2 === 0) txt('Тапни, чтобы взлететь', W / 2, H * 0.66, 22, '#fff', '#1b1b1b', 6);
+    if (best > 0) txt('Рекорд: ' + best, W / 2, H * 0.66 + 40, 20, '#ffe27a', '#1b1b1b', 5);
+  } else {
+    const pw = 260, ph = 190, px = (W - pw) / 2, py = H * 0.5 - 140;
+    ctx.fillStyle = 'rgba(255,248,225,.96)'; ctx.strokeStyle = '#6b4a1f'; ctx.lineWidth = 5;
+    rrect(px, py, pw, ph, 18); ctx.fill(); ctx.stroke();
+    txt('Съели!', W / 2, py + 40, 38, '#d8402c', '#5a1a10', 6);
+    txt('Счёт: ' + score, W / 2, py + 90, 28, '#3b2a12', 'rgba(0,0,0,0)', 0);
+    txt((newBest ? 'Новый рекорд: ' : 'Рекорд: ') + best, W / 2, py + 128, 22, newBest ? '#d8402c' : '#3b2a12', 'rgba(0,0,0,0)', 0);
+    if (performance.now() - deadAt > 650 && Math.floor(frames / 30) % 2 === 0) {
+      txt('Тапни, чтобы снова', W / 2, py + ph + 36, 22, '#fff', '#1b1b1b', 6);
+    }
+  }
+  if (flash > 0) {
+    ctx.fillStyle = 'rgba(255,255,255,' + flash + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+// ---------- loop & input ----------
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(now - last, 100);
+  last = now;
+  while (acc >= 1000 / 60) { step(); acc -= 1000 / 60; }
+  render();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('pointerdown', e => { e.preventDefault(); flap(); }, { passive: false });
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
+    e.preventDefault();
+    if (!e.repeat) flap();
+  }
+});
+window.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('visibilitychange', () => { last = performance.now(); });
+window.addEventListener('resize', resize);
+
+resize();
+crow.y = H / 2;
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
