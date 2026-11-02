@@ -14,7 +14,10 @@ jobs:
         run: |
           test -f crow-game.html || { echo "Нет файла crow-game.html в корне репозитория"; exit 1; }
           mkdir -p apk/app/src/main/java/com/example/crowgame apk/app/src/main/assets
-          cp crow-game.html apk/app/src/main/assets/index.html
+cp crow-game.html apk/app/src/main/assets/index.html
+
+mkdir -p apk/app/src/main/res/drawable
+cp icon.png apk/app/src/main/res/drawable/icon.png
 
           cat > apk/settings.gradle << 'EOF'
           pluginManagement {
