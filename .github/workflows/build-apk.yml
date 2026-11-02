@@ -74,9 +74,11 @@ cp icon.png apk/app/src/main/res/drawable/icon.png
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <application
-                  android:allowBackup="true"
-                  android:label="Ворона и крокодилы"
-                  android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+    android:allowBackup="true"
+    android:label="Ворона и крокодилы"
+    android:icon="@drawable/icon"
+    android:roundIcon="@drawable/icon"
+    android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
                   <activity
                       android:name=".MainActivity"
                       android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
